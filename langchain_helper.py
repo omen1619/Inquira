@@ -1,23 +1,23 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.llms import Ollama
 from langchain_community.utilities import SQLDatabase 
-from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate        
+from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate    
+import streamlit as st    
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, exc
 import os
 import re 
 from dotenv import load_dotenv
 import pandas as pd 
 from typing import List, Dict, Union
-import streamlit as st
 
 load_dotenv()
 
 def get_api_key():
-    # Priority 1: Streamlit Secrets (Cloud / .streamlit/secrets.toml)
+    # Priority 1: Check Streamlit Secrets (Cloud Dashboard or .streamlit/secrets.toml)
     if "GOOGLE_API_KEY" in st.secrets:
         return st.secrets["GOOGLE_API_KEY"]
-    # Priority 2: Local .env or System Environment
+    # Priority 2: Fallback to local .env file
     return os.getenv("GOOGLE_API_KEY")
 
 # --- Llama-Instruct Template Markers (matching with TRAINING TEMPLATE) ---
@@ -42,6 +42,16 @@ SYSTEM_PROMPT_CONTENT = ("You are an **Expert Text-to-SQL Assistant** specializi
 "\n6.  **Strict Domain Constraint:** Only answer questions strictly related to the provided SCHEMA. If the request is irrelevant (e.g., greetings, non-database queries), you MUST output: 'I am only allowed to answer questions based on the database schema.'"
 )
 
+EXPLAIN_PROMPT_CONTENT = (
+    "You are a Business Intelligence Analyst. Your task is to explain SQL queries "
+    "to non-technical users. \n"
+    "**RULES:**\n"
+    "1. Do NOT mention technical details like 'ASCII', 'CHAR(37)', or 'Concatenation'.\n"
+    "2. Translate 'LIKE' patterns into plain English (e.g., 'starts with', 'contains', 'ends with').\n"
+    "3. Focus on the business intent: What specific data is being filtered and why?\n"
+    "4. Keep it to 2-3 natural sentences."
+)
+
 # --- Few-Shot Example Template ---
 FEW_SHOT_TEMPLATE = "Question: {Question}\nSQL: {sql_query}"
 
@@ -63,7 +73,10 @@ SQL:
 # --- Helper functions (get_db_connection, get_schema_from_db, etc.) ---
 def get_db_connection(db_uri: str, sample_rows: int) -> SQLDatabase:
     """Initializes the SQLDatabase object."""
-    return SQLDatabase.from_uri(db_uri, sample_rows_in_table_info=sample_rows)
+    try:
+        return SQLDatabase.from_uri(db_uri, sample_rows_in_table_info=sample_rows)
+    except Exception as e:
+        raise RuntimeError(f"{str(e)}")
 
 def get_schema_from_db(db: SQLDatabase) -> str:
     """Generates the schema text."""
@@ -166,13 +179,14 @@ def run_nl2sql_chain_and_extract(
     nl_query: str,
     use_few_shots: bool,
     include_data_samples: bool,
-    few_shot_examples: List[Dict[str, str]] = None
+    few_shot_examples: List[Dict[str, str]] = None,
+    chat_history: List[Dict[str, str]] = None # Added for history context
 ) -> Dict[str, Union[str, pd.DataFrame]]:
     
     # ... (Model initialization and Schema setup) ...
-    
-    api_key = get_api_key()
 
+    api_key = get_api_key()
+    
     # 1. Initialize LLM (Conditional Model Selection)
     if model_name == "Gemini-2.5-Flash":
         llm = ChatGoogleGenerativeAI(model='gemini-2.5-flash',google_api_key=api_key, temperature=0.0)
@@ -193,9 +207,12 @@ def run_nl2sql_chain_and_extract(
         try:
             db = get_db_connection(db_uri, sample_rows_count) 
             schema_text = get_schema_from_db(db) 
+        except RuntimeError as re:
+            # Re-raise the clean error so the UI sees it
+            raise re
         except Exception as e:
             if not ddl_text:
-                raise Exception(f"Database connection failed: {e}")
+                raise RuntimeError(f"Database connection failed: {str(e)}")
     
     # 3. Build Schema Casing Map (Crucial for post-processing)
     schema_map = get_schema_map(schema_text)
@@ -210,6 +227,13 @@ def run_nl2sql_chain_and_extract(
 
     # 5. Construct Base Prompt (For first attempt)
     system_block = SYSTEM_PROMPT_CONTENT
+
+    # Build Conversational Context
+    history_block = ""
+    if chat_history:
+        history_block = "\n\n**PREVIOUS CONVERSATION:**\n"
+        for turn in chat_history[-3:]: # Send last 3 turns for context
+            history_block += f"User: {turn['Question']}\nSQL: {turn['SQL']}\n"
 
     # --- Start of EGR Implementation ---
     MAX_ATTEMPTS = 4
@@ -227,7 +251,7 @@ def run_nl2sql_chain_and_extract(
             # First attempt: Use the standard prompt structure
             if is_llama:
                 # Llama Instruct Format (Turn 1)
-                llama_prompt = f"{BEGIN_OF_TEXT}{START_SYSTEM}{system_block}{END_OF_TEXT}"
+                llama_prompt = f"{BEGIN_OF_TEXT}{START_SYSTEM}{system_block}{history_block}{END_OF_TEXT}"
                 llama_prompt += f"{START_USER}{schema_text}{END_OF_TEXT}"
                 for ex in selected_examples:
                     llama_prompt += f"{START_USER}Question: {ex['Question']}{END_OF_TEXT}"
@@ -244,7 +268,10 @@ def run_nl2sql_chain_and_extract(
                 )
                 final_prompt = f"""
                 **SYSTEM INSTRUCTION:**
-                {system_block}
+                {system_block}\n
+
+                **conversation history:**
+                {history_block}
                 
                 **FEW-SHOT EXAMPLES:**
                 {prompt_examples_text if prompt_examples_text else 'No few-shot examples provided.'}
@@ -330,32 +357,51 @@ def run_nl2sql_chain_and_extract(
     # --- End of EGR Loop ---
 
     # 11. Final Summary Generation (Runs only once after successful SQL or max attempts reached)
+    explanation = ""
     if execution_success:
+        # Build history context for the explainer
+        explain_history = ""
+        if chat_history:
+            for turn in chat_history[-2:]:
+                explain_history += f"Previous Q: {turn['Question']}\n"
+                
+        # Construct the multi-context prompt
+        explain_prompt = (
+            f"{EXPLAIN_PROMPT_CONTENT}\n\n"
+            f"**CONVERSATION CONTEXT:**\n{explain_history}\n"
+            f"**USER'S CURRENT QUESTION:** {nl_query}\n"
+            f"**GENERATED SQL:** {final_sql_query}\n\n"
+            "Explanation:"
+        )
+        explanation_res = llm.invoke(explain_prompt)
+        explanation = explanation_res.content if hasattr(explanation_res, 'content') else str(explanation_res)
+
         if db:
             try:
-                # --- Second LLM call for NL Summary ---
-#                 nl_output_prompt = f"""The user asked: '{nl_query}'. The generated SQL query was executed and returned {len(raw_data_df)} rows. 
-# You MUST provide a natural language answer that **explicitly lists every item or row** shown in the raw data result. 
-# Do not omit, summarize, or generalize the data unless the list is over 20 items.
-# The raw data for conversion is:\n{raw_data_df.to_string()}"""
-                
+                # Build history string for the summarizer
+                summary_context = ""
+                if chat_history:
+                    for turn in chat_history[-2:]:
+                        summary_context += f"Previous Question: {turn['Question']}\n"
                 nl_output_prompt = (
-                                "You are an **Expert Data Presentation Assistant** specializing in converting SQL results "
-                                "back into clear, detailed natural language. \n"
-                                "Your task is to convert the following SQL query results into a natural language sentence "
-                                "that **directly and politely answers the user's original question.** \n"
-                                "**CRITICAL:** Ensure the final answer explicitly mentions and lists ALL columns "
-                                "retrieved in the results (e.g., both the name and the email, if both were selected).\n"
-                                f"Original Question: {nl_query}\n"
-                                f"SQL Results : {raw_data_df.to_string()}\n\n"
-                                "Generate a natural language answer based on these results, being sure to mention ALL retrieved details (e.g., name AND email)."
-                            )
+                    "You are an **Expert Data Presentation Assistant** specializing in converting SQL results "
+                    "back into clear, detailed natural language. \n"
+                    "Your task is to convert the following SQL query results into a natural language sentence "
+                    "that **directly and politely answers the user's original question.** \n"
+                    "**CONTEXT OF CONVERSATION:**\n"
+                    f"{summary_context}\n"  # <--- Added context here
+                    "**CRITICAL:** Ensure the final answer explicitly mentions and lists ALL columns "
+                    "retrieved in the results (e.g., both the name and the email, if both were selected).\n"
+                    f"Current User Question: {nl_query}\n" # Changed to 'Current' for clarity
+                    f"SQL Results : {raw_data_df.to_string()}\n\n"
+                    "Generate a natural language answer based on these results, being sure to mention ALL retrieved details (e.g., name AND email)."
+                )
                 
                 summary_response = llm.invoke(nl_output_prompt)
                 if hasattr(summary_response, 'content'):
-                     final_answer = summary_response.content.strip()
+                    final_answer = summary_response.content.strip()
                 else:
-                     final_answer = str(summary_response).strip()
+                    final_answer = str(summary_response).strip()
                 
             except Exception as e:
                 final_answer = f"Summary Generation Failed: {e}"
@@ -371,9 +417,10 @@ def run_nl2sql_chain_and_extract(
     return {
         "sql_query": final_sql_query, 
         "final_answer": final_answer,
-        "raw_data": raw_data_df
+        "raw_data": raw_data_df,
+        "explanation": explanation
     }
-
+        
 # --- Helper function for parsing few-shot input ---
 def parse_few_shots_input(few_shot_input_text: str) -> List[Dict[str, str]]:
     """Parses the streamlit text area input into a list of few-shot dictionaries."""
