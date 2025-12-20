@@ -27,4 +27,6 @@ requests==2.32.5
 urllib3==2.3.0
 certifi==2025.11.12
 typing_extensions==4.15.0
+cryptography
+
 packaging==25.0
