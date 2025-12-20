@@ -127,7 +127,7 @@ with st.sidebar:
             db_name = st.text_input("Database Name", value=db_creds.get('name', 'atliq_tshirts'))
             
             # PORT WITH PLUS MINUS SELECTOR
-            db_port_val = db_creds.get('port', 3306)
+            db_port_val = db_creds.get('port', 25305)
             db_port = st.number_input("Port", min_value=1, max_value=65535, value=int(db_port_val))
             
             db_driver = st.selectbox("Driver Type", ("mysql+pymysql", "postgresql+psycopg2", "sqlite:///"), index=0)
@@ -329,4 +329,5 @@ if st.session_state.last_result:
                 except Exception as e:
                     st.error(f"⚠️ Execution Error: {str(e)}")
         with col_info:
+
             st.caption("Editing the SQL here will also update the context for your next conversational question.")
