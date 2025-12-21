@@ -1,4 +1,13 @@
 import streamlit as st
+
+# Check if the user is logged in
+if not st.user.is_logged_in:
+    st.title("🔐 AI SQL Agent: Restricted Access")
+    st.info("Please log in with your Google account to access the agent and your saved history.")
+    # This calls the Google OAuth flow using your secrets.toml
+    st.button("Log in with Google", on_click=st.login)
+    st.stop() # Stops the rest of the script from running
+
 import pandas as pd
 from sqlalchemy import create_engine, exc
 # Import the helper functions
@@ -65,7 +74,7 @@ if "last_result" not in st.session_state:
     st.session_state.last_result = None
 
 # Header Section with Icons
-col1, col2, col3 = st.columns([1, 1, 1])
+col1, col2, col3 = st.columns([2, 1, 2])
 
 with col2:
     st.image("main_logo.jpg",width=256)
@@ -91,7 +100,11 @@ default_index = 0 if db_creds.get('host') else 1
 # ==============================================
 with st.sidebar:
     # --- LOGO ---
-    st.image("https://thumbs.dreamstime.com/b/vector-halloween-black-bat-animal-icon-sign-isolated-white-background-silhouette-wings-abstract-tattoo-art-concept-101822638.jpg", width=80)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image("https://thumbs.dreamstime.com/b/vector-halloween-black-bat-animal-icon-sign-isolated-white-background-silhouette-wings-abstract-tattoo-art-concept-101822638.jpg", width=80)
+    st.success(f"Connected as: {st.user.name}")
+    st.button("Log out", on_click=st.logout)
     st.header("⚙️ Agent Configuration")
 
     # --- Feature 1: Model Selection ---
@@ -331,3 +344,4 @@ if st.session_state.last_result:
         with col_info:
 
             st.caption("Editing the SQL here will also update the context for your next conversational question.")
+
