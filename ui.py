@@ -77,7 +77,7 @@ if "last_result" not in st.session_state:
 col1, col2, col3 = st.columns([2, 1, 2])
 
 with col2:
-    st.image("main_logo.jpg",width=256)
+    st.image("main_logo.jpg",width=100)
     
 st.title("🤖 Inquira - Natural Language to SQL AI Agent")
 st.markdown("##### *Transform plain English questions into database queries with conversation history.*")
@@ -344,4 +344,5 @@ if st.session_state.last_result:
         with col_info:
 
             st.caption("Editing the SQL here will also update the context for your next conversational question.")
+
 
