@@ -1,8 +1,8 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.llms import Ollama
 from langchain_community.utilities import SQLDatabase 
-from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate    
-import streamlit as st    
+from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate
+import streamlit as st        
 
 from sqlalchemy import create_engine, exc
 import os
@@ -14,7 +14,7 @@ from typing import List, Dict, Union
 load_dotenv()
 
 def get_api_key():
-    # Priority 1: Check Streamlit Secrets (Cloud Dashboard or .streamlit/secrets.toml)
+    # Priority 1: Check Streamlit Secrets
     if "GOOGLE_API_KEY" in st.secrets:
         return st.secrets["GOOGLE_API_KEY"]
     # Priority 2: Fallback to local .env file
@@ -392,7 +392,7 @@ def run_nl2sql_chain_and_extract(
                     f"{summary_context}\n"  # <--- Added context here
                     "**CRITICAL:** Ensure the final answer explicitly mentions and lists ALL columns "
                     "retrieved in the results (e.g., both the name and the email, if both were selected).\n"
-                    f"Current User Question: {nl_query}\n" # Changed to 'Current' for clarity
+                    f"Current User Question: {nl_query}\n"
                     f"SQL Results : {raw_data_df.to_string()}\n\n"
                     "Generate a natural language answer based on these results, being sure to mention ALL retrieved details (e.g., name AND email)."
                 )

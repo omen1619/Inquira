@@ -1,29 +1,23 @@
 import streamlit as st
+from database_manager import init_history_db, save_chat_log, get_user_history
+
 
 # Check if the user is logged in
 if not st.user.is_logged_in:
     st.title("🔐 AI SQL Agent: Restricted Access")
     st.info("Please log in with your Google account to access the agent and your saved history.")
-    # This calls the Google OAuth flow using your secrets.toml
+    # This calls the Google OAuth
     st.button("Log in with Google", on_click=st.login)
     st.stop() # Stops the rest of the script from running
+
 
 import pandas as pd
 from sqlalchemy import create_engine, exc
 # Import the helper functions
 from langchain_helper import run_nl2sql_chain_and_extract, parse_few_shots_input 
 
-# ==============================================
-# 1. PAGE CONFIGURATION & THEME-SAFE CSS
-# ==============================================
-st.set_page_config(
-    page_title="AI NL-to-SQL Agent",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
-# Theme-safe CSS: Uses variables to ensure Dark/Light mode compatibility
+# CSS
 st.markdown("""
     <style>
         .stApp {
@@ -65,9 +59,19 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ==============================================
+
+# 1. PAGE CONFIGURATION
+
+st.set_page_config(
+    page_title="AI NL-to-SQL Agent",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+
 # 2. SESSION STATE INITIALIZATION
-# ==============================================
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_result" not in st.session_state:
@@ -95,9 +99,9 @@ def get_secrets_creds():
 db_creds = get_secrets_creds()
 default_index = 0 if db_creds.get('host') else 1 
 
-# ==============================================
+
 # 3. SIDEBAR: Configuration & Settings
-# ==============================================
+
 with st.sidebar:
     # --- LOGO ---
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -105,13 +109,22 @@ with st.sidebar:
         st.image("https://thumbs.dreamstime.com/b/vector-halloween-black-bat-animal-icon-sign-isolated-white-background-silhouette-wings-abstract-tattoo-art-concept-101822638.jpg", width=80)
     st.success(f"Connected as: {st.user.name}")
     st.button("Log out", on_click=st.logout)
+
+    if st.user.is_logged_in and "history_loaded" not in st.session_state:
+        try:
+            # We don't init the table here (saves time), just fetch
+            st.session_state.chat_history = get_user_history(st.user.email)
+            st.session_state.history_loaded = True
+        except:
+            st.session_state.chat_history = []
+    
     st.header("⚙️ Agent Configuration")
 
     # --- Feature 1: Model Selection ---
     with st.expander("🤖 1. AI Model Selection", expanded=True):
         selected_model = st.selectbox(
             "Choose Model",
-            ("Gemini-2.5-Flash"),
+            ("Gemini-2.5-Flash", "Llama 3.1 (Inquira)"),
             help="Select the underlying LLM powering the agent. Ensure Ollama is running for Llama."
         )
         st.info(f"Active: **{selected_model}**")
@@ -186,13 +199,14 @@ with st.sidebar:
     # --- SESSION HISTORY ---
     st.divider()
     st.subheader("📜 Session History")
+    total_queries = len(st.session_state.chat_history)
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.chat_history = []
         st.session_state.last_result = None
         st.rerun()
     
     # Render history with custom card styling
-    for i, chat in enumerate(reversed(st.session_state.chat_history)):
+    for i, chat in enumerate(st.session_state.chat_history):
         st.markdown(f"""
             <div class="history-card">
                 <small style='color: gray;'>Query {len(st.session_state.chat_history)-i}</small><br>
@@ -201,9 +215,9 @@ with st.sidebar:
         """, unsafe_allow_html=True)
 
 
-# ==============================================
+
 # 4. MAIN PAGE: Input and Results
-# ==============================================
+
 
 # User Input Card
 st.container()
@@ -245,6 +259,9 @@ if generate_btn:
                     st.warning(f"⚠️ Parsing Error in Few-Shots: {e}. Running with zero-shot instead.")
             
             # Call helper with full Exception Handling for LLM connectivity
+            init_history_db()
+            latest_items = st.session_state.chat_history[:4]
+            ascending_history = list(reversed(latest_items))
             result = run_nl2sql_chain_and_extract(
                 model_name=selected_model,
                 db_uri=db_connection_uri if schema_method == "DB Connection (Inputs)" else None,
@@ -253,17 +270,20 @@ if generate_btn:
                 use_few_shots=use_few_shots,
                 include_data_samples=include_data_samples,
                 few_shot_examples=few_shot_examples,
-                chat_history=st.session_state.chat_history
+                chat_history=ascending_history
             )
             
             # Persist successful results
-            st.session_state.last_result = result
-            st.session_state.chat_history.append({
-                "Question": nl_query,
-                "SQL": result.get('sql_query', 'N/A')
-            })
+            if result and 'sql_query' in result:
+                
+                save_chat_log(st.user.email, nl_query, result['sql_query'])
+        
+                # Update local session for instant UI feedback
+                st.session_state.chat_history = get_user_history(st.user.email)
+                st.session_state.last_result = result
+                st.rerun()
 
-        # 1. CATCH DATABASE ERRORS FIRST (Most common)
+        # 1. CATCH DATABASE ERRORS FIRST
         except (exc.SQLAlchemyError, RuntimeError) as e:
             st.error(f"🔌 **Database Connectivity Error**\n\n{str(e)}")
             st.info("💡 **Tip:** This usually means the host is unreachable, the port is blocked, or your credentials (User/Pass) are wrong.")
@@ -274,14 +294,14 @@ if generate_btn:
             st.error("❌ **API Connection Failed**: Could not reach the AI model provider (Gemini/Ollama).")
             st.stop()
 
-        # 3. CATCH EVERYTHING ELSE (Last Resort)
+        # 3. CATCH EVERYTHING ELSE
         except Exception as e:
             st.error(f"❌ **Unexpected Error**\n\n{str(e)}")
             st.stop()
 
-# ==============================================
+
 # 5. DISPLAY RESULTS
-# ==============================================
+
 if st.session_state.last_result:
     res = st.session_state.last_result
     st.divider()
@@ -342,7 +362,4 @@ if st.session_state.last_result:
                 except Exception as e:
                     st.error(f"⚠️ Execution Error: {str(e)}")
         with col_info:
-
             st.caption("Editing the SQL here will also update the context for your next conversational question.")
-
-
