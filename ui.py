@@ -1,366 +1,184 @@
 import streamlit as st
-from database_manager import init_history_db, save_chat_log, get_user_history
-
-
-# Check if the user is logged in
-if not st.user.is_logged_in:
-    st.title("🔐 AI SQL Agent: Restricted Access")
-    st.info("Please log in with your Google account to access the agent and your saved history.")
-    # This calls the Google OAuth
-    st.button("Log in with Google", on_click=st.login)
-    st.stop() # Stops the rest of the script from running
-
-
 import pandas as pd
 from sqlalchemy import create_engine, exc
-# Import the helper functions
+from database_manager import init_history_db, save_chat_log, get_user_history
 from langchain_helper import run_nl2sql_chain_and_extract, parse_few_shots_input 
 
+# Basic page setup - keeping it simple
+st.set_page_config(page_title="Inquira SQL AI", page_icon="🤖", layout="wide")
 
-# CSS
+# --- AUTH GATE ---
+# Throwing a quick check here to make sure they're logged in before loading everything else
+if not st.user.is_logged_in:
+    st.title("🔐 Access Restricted")
+    st.warning("You gotta log in with Google to use the SQL agent and see your history.")
+    st.button("Log in with Google", on_click=st.login)
+    st.stop()
+
+# --- STYLING (The 'Inquira' look) ---
 st.markdown("""
     <style>
-        .stApp {
-            background-color: var(--background-color);
-        }
-        
-        /* Sidebar styling with theme-aware borders */
-        section[data-testid="stSidebar"] {
-            border-right: 1px solid var(--secondary-background-color);
-        }
-        
-        /* Modern Card styling for Session History - Theme Safe */
+        .stApp { background-color: var(--background-color); }
+        /* Clean sidebar border */
+        section[data-testid="stSidebar"] { border-right: 1px solid #444; }
+        /* History cards that actually look good */
         .history-card {
-            background-color: var(--secondary-background-color);
-            padding: 12px;
-            border-radius: 10px;
-            border-left: 5px solid #4CAF50;
-            margin-bottom: 12px;
-            color: var(--text-color);
-            font-size: 0.9rem;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            background: #262730; padding: 15px; border-radius: 8px;
+            border-left: 4px solid #00d4ff; margin-bottom: 10px;
+            font-size: 0.85rem; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
         }
-
-        /* Buttons and Inputs */
-        .stButton>button {
-            border-radius: 8px;
-            font-weight: 600;
-            transition: all 0.2s ease;
-        }
-        
-        /* Tab styling */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 15px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            font-weight: 600;
-            padding: 10px 20px;
-        }
+        .stButton>button { border-radius: 6px; }
     </style>
 """, unsafe_allow_html=True)
 
-
-# 1. PAGE CONFIGURATION
-
-st.set_page_config(
-    page_title="AI NL-to-SQL Agent",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-
-# 2. SESSION STATE INITIALIZATION
-
+# --- APP STATE ---
+# Just initializing things if they don't exist yet
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 
-# Header Section with Icons
-col1, col2, col3 = st.columns([2, 1, 2])
-
-with col2:
-    st.image("main_logo.jpg",width=100)
-    
-st.title("🤖 Inquira - Natural Language to SQL AI Agent")
-st.markdown("##### *Transform plain English questions into database queries with conversation history.*")
-
-# Helper to construct DB URI from Streamlit secrets
-def get_secrets_creds():
-    """Tries to get a dictionary of credentials from st.secrets with error safety."""
+# Grab history from the DB if we haven't already this session
+if "history_loaded" not in st.session_state:
     try:
-        if "db_connection" in st.secrets:
-            return st.secrets["db_connection"]
+        st.session_state.chat_history = get_user_history(st.user.email)
+        st.session_state.history_loaded = True
     except Exception:
-        pass
-    return {}
-
-db_creds = get_secrets_creds()
-default_index = 0 if db_creds.get('host') else 1 
-
-
-# 3. SIDEBAR: Configuration & Settings
-
-with st.sidebar:
-    # --- LOGO ---
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image("https://thumbs.dreamstime.com/b/vector-halloween-black-bat-animal-icon-sign-isolated-white-background-silhouette-wings-abstract-tattoo-art-concept-101822638.jpg", width=80)
-    st.success(f"Connected as: {st.user.name}")
-    st.button("Log out", on_click=st.logout)
-
-    if st.user.is_logged_in and "history_loaded" not in st.session_state:
-        try:
-            # We don't init the table here (saves time), just fetch
-            st.session_state.chat_history = get_user_history(st.user.email)
-            st.session_state.history_loaded = True
-        except:
-            st.session_state.chat_history = []
-    
-    st.header("⚙️ Agent Configuration")
-
-    # --- Feature 1: Model Selection ---
-    with st.expander("🤖 1. AI Model Selection", expanded=True):
-        selected_model = st.selectbox(
-            "Choose Model",
-            ("Gemini-2.5-Flash"),
-            help="Select the underlying LLM powering the agent. Ensure Ollama is running for Llama."
-        )
-        st.info(f"Active: **{selected_model}**")
-
-    st.divider()
-
-    # --- Feature 2: Database Schema Source ---
-    with st.expander("📂 2. Database Schema", expanded=True):
-        schema_method = st.radio(
-            "How will you provide the schema?",
-            ("DB Connection (Inputs)", "Paste DDL/Schema Directly"),
-            index=default_index
-        )
-
-        db_connection_uri = None
-        direct_schema_text = None
-        include_data_samples = False 
-
-        if schema_method == "DB Connection (Inputs)":
-            st.caption("Provide connection details to fetch the schema and execute the query.")
-            
-            # VERTICAL ARRANGEMENT OF DB COMPONENTS
-            db_host = st.text_input("Host", value=db_creds.get('host', 'localhost'))
-            db_user = st.text_input("Username", value=db_creds.get('user', 'root'))
-            db_password = st.text_input("Password", type="password", value=db_creds.get('password', ''))
-            db_name = st.text_input("Database Name", value=db_creds.get('name', 'atliq_tshirts'))
-            
-            # PORT WITH PLUS MINUS SELECTOR
-            db_port_val = db_creds.get('port', 25305)
-            db_port = st.number_input("Port", min_value=1, max_value=65535, value=int(db_port_val))
-            
-            db_driver = st.selectbox("Driver Type", ("mysql+pymysql", "postgresql+psycopg2", "sqlite:///"), index=0)
-
-            if db_host and db_user and db_password and db_name:
-                db_connection_uri = f"{db_driver}://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-            
-            st.divider()
-            st.subheader("3. Data Sampling (Privacy)")
-            include_data_samples = st.toggle(
-                "Include sample rows in the prompt.", 
-                value=False, 
-                help="Warning: If enabled, the LLM will be given 3 sample rows from each table, which exposes real data values for context."
-            )
-            if not include_data_samples:
-                st.caption("Data samples are excluded, minimizing privacy risk.")
-
-        else: # Paste DDL/Schema Directly
-            direct_schema_text = st.text_area(
-                "Paste Schema Definitions (DDL)",
-                placeholder="CREATE TABLE t_shirts (...);\nCREATE TABLE discounts (...);",
-                height=250,
-                help="Paste the CREATE TABLE statements here for context."
-            )
-            st.divider()
-            st.subheader("3. Data Sampling (N/A)")
-            st.caption("Data sampling is irrelevant in DDL-only mode.")
-
-    # --- Feature 4: Few-Shot Prompting ---
-    with st.expander("📝 4. Few-Shot Examples", expanded=False):
-        use_few_shots = st.toggle("Enable Few-Shot Prompting", value=False)
-        few_shot_input = None
-        if use_few_shots:
-            few_shot_input = st.text_area(
-                "Input Few-Shot Examples",
-                placeholder="Q: Find the price of all Levi t-shirts\nA: SELECT price FROM t_shirts WHERE brand = 'Levi'\n\n---\n\nQ: List all products\nA: SELECT * FROM t_shirts",
-                height=300,
-                help="Format: Q: [Question]\nA: [SQL Query]. Separate examples with '---'."
-            )
-        else:
-            st.caption("Few-shot disabled.")
-
-    # --- SESSION HISTORY ---
-    st.divider()
-    st.subheader("📜 Session History")
-    total_queries = len(st.session_state.chat_history)
-    if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.chat_history = []
-        st.session_state.last_result = None
+
+# --- SIDEBAR CONFIG ---
+with st.sidebar:
+    st.header("Inquira Settings")
+    
+    # Profile bit
+    st.write(f"Logged in as: **{st.user.name}**")
+    if st.button("Sign Out"):
+        st.logout()
+    
+    st.divider()
+
+    # DB Connection Setup
+    with st.expander("🛠️ Database Connection", expanded=True):
+        # Fallback to secrets if they exist, otherwise use defaults
+        creds = st.secrets.get("db_connection", {})
+        
+        host = st.text_input("Host", value=creds.get('host', 'localhost'))
+        user = st.text_input("User", value=creds.get('user', 'root'))
+        pw = st.text_input("Password", type="password", value=creds.get('password', ''))
+        db = st.text_input("Database", value=creds.get('name', 'atliq_tshirts'))
+        port = st.number_input("Port", value=int(creds.get('port', 3306)))
+        driver = st.selectbox("Driver", ["mysql+pymysql", "postgresql+psycopg2", "sqlite:///"])
+
+        uri = f"{driver}://{user}:{pw}@{host}:{port}/{db}"
+        sampling = st.toggle("Include sample data in prompt?", value=False)
+
+    # Training/Examples
+    with st.expander("🧠 Few-Shot Training", expanded=False):
+        use_shots = st.toggle("Use examples?", value=False)
+        shots_raw = st.text_area("Q: Question... A: SQL...", height=150)
+
+    # History list (only showing the last 5 for neatness)
+    st.divider()
+    st.subheader("Your Recent Queries")
+    if st.button("Clear All History"):
+        st.session_state.chat_history = []
         st.rerun()
     
-    # Render history with custom card styling
-    for i, chat in enumerate(st.session_state.chat_history):
-        st.markdown(f"""
-            <div class="history-card">
-                <small style='color: gray;'>Query {len(st.session_state.chat_history)-i}</small><br>
-                <b>Q:</b> {chat['Question'][:60]}...
-            </div>
-        """, unsafe_allow_html=True)
+    for item in reversed(st.session_state.chat_history[-5:]):
+        st.markdown(f'<div class="history-card">{item["Question"][:60]}...</div>', unsafe_allow_html=True)
 
+# --- MAIN CONTENT ---
+st.title("Inquira: Talk to your Data")
+st.write("Turn your English questions into SQL queries instantly.")
 
+# Quick Suggestions (UX trick to get people started)
+cols = st.columns(3)
+chips = ["Show all inventory", "Top 5 brands", "Stock by color"]
+for i, chip in enumerate(chips):
+    if cols[i].button(chip, use_container_width=True):
+        st.session_state.temp_prompt = chip
 
-# 4. MAIN PAGE: Input and Results
+# Show the chat history as bubbles
+for msg in st.session_state.chat_history:
+    with st.chat_message("user"):
+        st.write(msg["Question"])
+    with st.chat_message("assistant"):
+        st.code(msg.get("SQL", ""), language="sql")
 
+# The Chat Bar
+user_input = st.chat_input("What would you like to know?")
 
-# User Input Card
-st.container()
-with st.expander("🗣️ Natural Language Input", expanded=True):
-    nl_query = st.text_area(
-        "Describe the data you need in plain English:",
-        height=120,
-        placeholder="e.g., Show me the brand and color of all shirts that cost more than 30."
-    )
-    
-    col_btn, _ = st.columns([1, 5])
-    with col_btn:
-        generate_btn = st.button("✨ Generate SQL", type="primary", use_container_width=True)
+# Handling suggestion click or typing
+active_input = getattr(st.session_state, 'temp_prompt', user_input)
+if active_input:
+    if hasattr(st.session_state, 'temp_prompt'):
+        del st.session_state.temp_prompt # clean up
 
-if generate_btn:
-    # --- Input Validation ---
-    if not nl_query.strip():
-        st.error("⚠️ Please enter a natural language query first.")
-        st.stop()
-        
-    is_ddl_only_and_empty = (schema_method == "Paste DDL/Schema Directly" and not direct_schema_text)
-    is_db_conn_missing = (schema_method == "DB Connection (Inputs)" and not db_connection_uri)
+    with st.chat_message("user"):
+        st.write(active_input)
 
-    if is_ddl_only_and_empty:
-        st.error("⚠️ Please provide the DDL schema in the sidebar.")
-        st.stop()
-    elif is_db_conn_missing:
-         st.error("⚠️ Please fill in all required database connection fields.")
-         st.stop()
-        
-    with st.spinner(f"🧠 AI is thinking... Analyzing with {selected_model}"):
+    # The 'Thinking' Phase
+    with st.status("Working on your query...", expanded=True) as status:
         try:
-            # Error safety for few-shot parsing
-            few_shot_examples = None
-            if use_few_shots and few_shot_input:
-                try:
-                    few_shot_examples = parse_few_shots_input(few_shot_input)
-                except Exception as e:
-                    st.warning(f"⚠️ Parsing Error in Few-Shots: {e}. Running with zero-shot instead.")
-            
-            # Call helper with full Exception Handling for LLM connectivity
+            st.write("Checking schema and connection...")
             init_history_db()
-            latest_items = st.session_state.chat_history[:4]
-            ascending_history = list(reversed(latest_items))
-            result = run_nl2sql_chain_and_extract(
-                model_name=selected_model,
-                db_uri=db_connection_uri if schema_method == "DB Connection (Inputs)" else None,
-                ddl_text=direct_schema_text,
-                nl_query=nl_query,
-                use_few_shots=use_few_shots,
-                include_data_samples=include_data_samples,
-                few_shot_examples=few_shot_examples,
-                chat_history=ascending_history
+            
+            shots = None
+            if use_shots and shots_raw:
+                shots = parse_few_shots_input(shots_raw)
+            
+            st.write("Consulting Gemini for the SQL...")
+            # Grabbing the last few turns for context
+            context = list(reversed(st.session_state.chat_history[:4]))
+            
+            res = run_nl2sql_chain_and_extract(
+                model_name="Gemini-2.5-Flash",
+                db_uri=uri,
+                ddl_text=None,
+                nl_query=active_input,
+                use_few_shots=use_shots,
+                include_data_samples=sampling,
+                few_shot_examples=shots,
+                chat_history=context
             )
             
-            # Persist successful results
-            if result and 'sql_query' in result:
-                
-                save_chat_log(st.user.email, nl_query, result['sql_query'])
-        
-                # Update local session for instant UI feedback
+            if res and 'sql_query' in res:
+                save_chat_log(st.user.email, active_input, res['sql_query'])
                 st.session_state.chat_history = get_user_history(st.user.email)
-                st.session_state.last_result = result
+                st.session_state.last_result = res
+                status.update(label="Got it!", state="complete", expanded=False)
                 st.rerun()
-
-        # 1. CATCH DATABASE ERRORS FIRST
-        except (exc.SQLAlchemyError, RuntimeError) as e:
-            st.error(f"🔌 **Database Connectivity Error**\n\n{str(e)}")
-            st.info("💡 **Tip:** This usually means the host is unreachable, the port is blocked, or your credentials (User/Pass) are wrong.")
-            st.stop()
-
-        # 2. CATCH AI MODEL ERRORS
-        except ConnectionError:
-            st.error("❌ **API Connection Failed**: Could not reach the AI model provider (Gemini/Ollama).")
-            st.stop()
-
-        # 3. CATCH EVERYTHING ELSE
+                
         except Exception as e:
-            st.error(f"❌ **Unexpected Error**\n\n{str(e)}")
-            st.stop()
+            status.update(label="Something went wrong", state="error")
+            st.error(f"Error: {e}")
 
-
-# 5. DISPLAY RESULTS
-
+# --- THE RESULTS VIEW ---
 if st.session_state.last_result:
-    res = st.session_state.last_result
+    res_data = st.session_state.last_result
     st.divider()
-
-    tab_results, tab_logic, tab_edit = st.tabs([
-        "📊 Query Results", 
-        "💡 Logic Explanation", 
-        "🛠️ Manual Correction"
-    ])
-
-    with tab_results:
-        st.subheader("Final Answer (Natural Language)")
-        st.info(res.get('final_answer', "Summary not available."))
-        
-        st.subheader("Raw Data Results")
-        try:
-            if res['raw_data'] is not None and not res['raw_data'].empty:
-                st.dataframe(res['raw_data'], use_container_width=True, hide_index=True)
-                st.caption(f"Success: {len(res['raw_data'])} rows retrieved.")
-            else:
-                st.warning("No data found for this query.")
-        except Exception as e:
-            st.error(f"Data Display Error: {e}")
-
-    with tab_logic:
-        st.subheader("AI Reasoning")
-        st.write(res.get('explanation', "Logic breakdown not available for this run."))
-        st.subheader("Generated SQL Query")
-        st.code(res.get('sql_query', '-- No SQL code'), language='sql')
+    
+    tab_data, tab_details, tab_edit = st.tabs(["📊 Table", "🧠 Logic", "🔧 Edit"])
+    
+    with tab_data:
+        st.success(res_data.get('final_answer', 'Done!'))
+        if res_data.get('raw_data') is not None:
+            st.dataframe(res_data['raw_data'], use_container_width=True, hide_index=True)
+    
+    with tab_details:
+        st.write("**How I figured this out:**")
+        st.write(res_data.get('explanation', 'No explanation provided.'))
+        st.code(res_data.get('sql_query', ''), language='sql')
 
     with tab_edit:
-        st.subheader("🛠️ Interactive Query Correction")
-        st.info("If the AI logic missed a nuance, refine the SQL below and update the results instantly.")
-        
-        manual_sql = st.text_area("Edit SQL Query:", value=res.get('sql_query', ''), height=250)
-        
-        col_run, col_info = st.columns([1, 3])
-        with col_run:
-            if st.button("🚀 Re-execute SQL", use_container_width=True):
-                try:
-                    if schema_method == "DB Connection (Inputs)" and db_connection_uri:
-                        engine = create_engine(db_connection_uri)
-                        with engine.connect() as conn:
-                            updated_df = pd.read_sql(manual_sql, conn)
-                        
-                        # Update the session state
-                        st.session_state.last_result['raw_data'] = updated_df
-                        st.session_state.last_result['sql_query'] = manual_sql
-                        if st.session_state.chat_history:
-                            st.session_state.chat_history[-1]['SQL'] = manual_sql 
-                        
-                        st.success("✅ Results Updated!")
-                        st.rerun()
-                    else:
-                        st.error("⚠️ Manual re-execution requires an active DB connection.")
-                except exc.ProgrammingError as e:
-                    st.error(f"⚠️ SQL Syntax Error: {e.orig}")
-                except Exception as e:
-                    st.error(f"⚠️ Execution Error: {str(e)}")
-        with col_info:
-
-            st.caption("Editing the SQL here will also update the context for your next conversational question.")
+        new_sql = st.text_area("Tweak the SQL here:", value=res_data.get('sql_query', ''), height=150)
+        if st.button("Run Updated SQL"):
+            try:
+                # Create a local engine and run the manual query
+                eng = create_engine(uri)
+                df = pd.read_sql(new_sql, eng)
+                st.session_state.last_result['raw_data'] = df
+                st.session_state.last_result['sql_query'] = new_sql
+                st.rerun()
+            except Exception as e:
+                st.error(f"SQL Error: {e}")
