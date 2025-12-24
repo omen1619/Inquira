@@ -9,11 +9,11 @@ st.set_page_config(page_title="Inquira SQL AI", page_icon="🤖", layout="wide")
 
 # --- AUTH GATE ---
 # Throwing a quick check here to make sure they're logged in before loading everything else
-if not st.user.is_logged_in:
-    st.title("🔐 Access Restricted")
-    st.warning("You gotta log in with Google to use the SQL agent and see your history.")
-    st.button("Log in with Google", on_click=st.login)
-    st.stop()
+#if not st.user.is_logged_in:
+    #st.title("🔐 Access Restricted")
+    #st.warning("You gotta log in with Google to use the SQL agent and see your history.")
+    #st.button("Log in with Google", on_click=st.login)
+    #st.stop()
 
 # --- STYLING (The 'Inquira' look) ---
 st.markdown("""
