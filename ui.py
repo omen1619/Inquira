@@ -124,7 +124,7 @@ with st.sidebar:
     with st.expander("🤖 1. AI Model Selection", expanded=True):
         selected_model = st.selectbox(
             "Choose Model",
-            ("Gemini-2.5-Flash", "Llama 3.1 (Inquira)"),
+            ("Gemini-2.5-Flash"),
             help="Select the underlying LLM powering the agent. Ensure Ollama is running for Llama."
         )
         st.info(f"Active: **{selected_model}**")
@@ -362,4 +362,5 @@ if st.session_state.last_result:
                 except Exception as e:
                     st.error(f"⚠️ Execution Error: {str(e)}")
         with col_info:
+
             st.caption("Editing the SQL here will also update the context for your next conversational question.")
