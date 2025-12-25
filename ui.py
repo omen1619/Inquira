@@ -37,12 +37,15 @@ st.markdown("""
             background: rgba(255, 255, 255, 0.05);
             margin-left: 20%;
             border-right: 4px solid #4CAF50;
+            box-shadow: 0 0 15px rgba(0, 255, 157, 0.4), 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
 
         .ai-bubble {
-            background: rgba(76, 175, 80, 0.05);
+            background: rgba(200, 0, 255, 0.08);  /* Subtle neon purple tint with transparency */
             margin-right: 10%;
-            border-left: 4px solid #4CAF50;
+            border-left: 6px solid #C800FF;       /* Thick neon purple accent border */
+            color: #E0C0FF;                       /* Light lavender text for great readability */
+            box-shadow: 0 0 15px rgba(200, 0, 255, 0.4), 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
 
         /* Sidebar Styling - Glossy Sidebar */
@@ -60,7 +63,7 @@ st.markdown("""
 
         /* Submit Button Styling */
         .stButton>button {
-            background: linear-gradient(45deg, #2e7d32, #4caf50) !important;
+            background: linear-gradient(45deg, #8A00C4, #C800FF) !important;  /* Dark to bright neon purple */
             color: white !important;
             border: none !important;
             font-weight: 600 !important;
@@ -93,7 +96,7 @@ if "last_result" not in st.session_state:
 with st.sidebar:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.image("https://thumbs.dreamstime.com/b/vector-halloween-black-bat-animal-icon-sign-isolated-white-background-silhouette-wings-abstract-tattoo-art-concept-101822638.jpg", width=80)
+        st.image("sidebar-logo.png", width=100)
     
     st.success(f"Connected as: {st.user.name}")
     st.button("Log out", on_click=st.logout)
@@ -166,8 +169,37 @@ with st.sidebar:
 # ==============================================
 # 4. MAIN CHAT AREA
 # ==============================================
-st.title("🤖 Inquira - Natural Language to SQL")
-st.markdown("##### *Transform plain English questions into database queries with conversation history.*")
+# st.title("🤖 Inquira - Natural Language to SQL")
+# st.markdown("##### *Transform plain English questions into database queries with conversation history.*")
+
+st.markdown("""
+    <div style="text-align: center; margin-bottom: 40px; margin-top: 20px;">
+        <h1 style="
+            font-size: 3rem; 
+            margin: 0; 
+            font-weight: 800;
+            color: #DAA0FF;
+            text-shadow: 
+                0 0 10px rgba(200, 100, 255, 0.6),
+                0 0 20px rgba(200, 100, 255, 0.8),
+                0 0 40px rgba(180, 0, 255, 0.6),
+                0 0 80px rgba(160, 0, 255, 0.4);
+            letter-spacing: 1px;
+        ">
+            🤖 Inquira - Natural Language to SQL
+        </h1>
+        <p style="
+            font-size: 1.3rem; 
+            color: #B8A0D6; 
+            margin: 15px 0 0 0; 
+            opacity: 0.95;
+            font-weight: 400;
+        ">
+            Transform plain English questions into database queries with conversation history.
+        </p>
+    </div>
+""", unsafe_allow_html=True)
+
 
 # Scrollable Chat Container
 chat_container = st.container()
