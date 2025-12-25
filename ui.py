@@ -3,7 +3,7 @@ from database_manager import init_history_db, save_chat_log, get_user_history
 import pandas as pd
 from sqlalchemy import create_engine, exc
 # Import the helper functions
-from langchain_helper_last import run_nl2sql_chain_and_extract, parse_few_shots_input 
+from langchain_helper import run_nl2sql_chain_and_extract, parse_few_shots_input 
 
 # ==============================================
 # 1. PAGE CONFIG & GLOSSY CSS
