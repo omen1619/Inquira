@@ -110,8 +110,8 @@ with st.sidebar:
     with st.expander("🤖 1. AI Model Selection", expanded=False):
         selected_model = st.selectbox(
             "Choose Model",
-            ("Gemini-2.5-Flash", "Llama 3.1 (Inquira)"),
-            help="Select the underlying LLM powering the agent. Ensure Ollama is running for Llama."
+            ("Gemini-2.5-Flash"),
+            help="Select the underlying LLM powering the agent. Ensure Ollama is running for Llama.(only gemini is available to choose for deployed variant of this agent , consider setting up local variant of this agent to use llama model)"
         )
 
     with st.expander("📂 2. Database Schema", expanded=True):
